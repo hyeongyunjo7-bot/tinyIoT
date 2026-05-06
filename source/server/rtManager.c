@@ -258,6 +258,8 @@ RTNode *find_csr_rtnode_by_uri(char *uri)
  */
 RTNode *find_rtnode(char *addr)
 {
+    logger("RTM", LOG_LEVEL_DEBUG, "ENTER find_rtnode addr = %s", addr);
+
     if (!addr)
         return NULL;
     char *foptPtr = NULL;
@@ -266,24 +268,32 @@ RTNode *find_rtnode(char *addr)
     {
         return rt->cb;
     }
-    if ((foptPtr = strstr(addr, "/fopt")))
-    {
-        foptPtr[0] = '\0';
-    }
 
     if ((strncmp(addr, CSE_BASE_NAME, strlen(CSE_BASE_NAME)) == 0 && addr[strlen(CSE_BASE_NAME)] == '/') || (addr[0] == '-' && addr[1] == '/'))
     {
-        logger("RTM", LOG_LEVEL_DEBUG, "Hierarchical Addressing");
-        rtnode = find_rtnode_by_uri(addr);
+        logger("RTM", LOG_LEVEL_DEBUG, "Structured Resource Addressing");
+        if ((foptPtr = strstr(addr, "/fopt")))
+        {
+            foptPtr[0] = '\0';
+        }
+        rtnode = find_rtnode_by_rn(addr);
+    }
+    else if (strchr(addr, '/'))
+    {
+        logger("RTM", LOG_LEVEL_DEBUG, "Hybrid Resource Addressing");
+        rtnode = find_rtnode_by_hybrid(addr);
     }
     else
     {
+        logger("RTM", LOG_LEVEL_DEBUG, "Unstructured Resource Addressing");
         rtnode = find_rtnode_by_ri(addr);
     }
+
     if (foptPtr)
     {
         foptPtr[0] = '/';
     }
+
     if (isExpired(rtnode))
     {
 #if MONO_THREAD == 0
@@ -351,10 +361,10 @@ RTNode *get_remote_resource(char *address, int *rsc)
  * @param uri hierarchical uri
  * @return resource node or NULL
  */
-RTNode *find_rtnode_by_uri(char *uri)
+RTNode *find_rtnode_by_rn(char *rn)
 {
     RTNode *rtnode = rt->cb, *parent_rtnode = NULL;
-    char *target_uri = strdup(uri);
+    char *target_uri = strdup(rn);
     char *target_ptr;
     char *ptr = strtok_r(target_uri, "/", &target_ptr);
     if (!ptr)
@@ -419,13 +429,14 @@ RTNode *find_rtnode_by_uri(char *uri)
                 {
                     flag = 1;
                 }
+
                 if (flag == 0 || flag == 1)
                 {
                     cin = db_get_cin_laol(parent_rtnode, flag);
                 }
                 else
                 {
-                    cin = db_get_resource_by_uri(uri, RT_CIN);
+                    cin = db_get_resource_by_uri(rn, RT_CIN);
                 }
                 if (cin)
                 {
@@ -448,13 +459,14 @@ RTNode *find_rtnode_by_uri(char *uri)
                 {
                     flag = 1;
                 }
+
                 if (flag == 0 || flag == 1)
                 {
                     fcin = db_get_fcin_laol(parent_rtnode, flag);
                 }
                 else
                 {
-                    fcin = db_get_resource_by_uri(uri, RT_FCIN);
+                    fcin = db_get_resource_by_uri(rn, RT_FCIN);
                 }
                 if (fcin)
                 {
@@ -472,6 +484,149 @@ RTNode *find_rtnode_by_uri(char *uri)
     return rtnode;
 }
 
+RTNode* find_rtnode_by_hybrid(char* hb)
+{
+    if (!hb)
+        return NULL;
+
+    RTNode *parent_rtnode = NULL;
+    RTNode *rtnode = NULL;
+    char *target_uri = strdup(hb);
+    char *slash = NULL;
+    char *parent_ri = NULL;
+    char *virtual_rn = NULL;
+    char *suffix = NULL;
+    int flag = -1;
+
+    if (!target_uri)
+        return NULL;
+
+    ///Hybrid Resource Addressing: parentRI / virtualResourceName
+    slash = strchr(target_uri, '/');
+    if (!slash)
+    {
+        free(target_uri);
+        return NULL;
+    }
+
+    *slash = '\0';
+    parent_ri = target_uri;
+    virtual_rn = slash + 1;
+
+    if (strlen(parent_ri) == 0 || strlen(virtual_rn) == 0)
+    {
+        free(target_uri);
+        return NULL;
+    }
+
+    ///fopt 뒤에 추가 경로가 붙을 수 있으므로 분리
+    suffix = strchr(virtual_rn, '/');
+    if (suffix)
+    {
+        *suffix = '\0';
+        suffix++;
+    }
+
+    //1. RI
+    parent_rtnode = find_rtnode_by_ri(parent_ri);
+    if (!parent_rtnode)
+    {
+        free(target_uri);
+        return NULL;
+    }
+
+    //2. GroupRI/fopt 또는 GroupRI/sfop. group 자체를 반환
+    if (!strcmp(virtual_rn, "fopt") || !strcmp(virtual_rn, "sfop"))
+    {
+        if (parent_rtnode->ty == RT_GRP)
+        {
+            free(target_uri);
+            return parent_rtnode;
+        }
+
+        free(target_uri);
+        return NULL;
+    }
+
+    //la/ol 뒤에 추가 path가 붙는 경우
+    if (suffix && strlen(suffix) > 0)
+    {
+        free(target_uri);
+        return NULL;
+    }
+
+    //3. ContainerRI/la 또는 ContainerRI/ol
+    if (parent_rtnode->ty == RT_CNT)
+    {
+        cJSON *cin = NULL;
+
+        if (!strcmp(virtual_rn, "la") || !strcmp(virtual_rn, "latest"))
+            flag = 0;
+        else if (!strcmp(virtual_rn, "ol") || !strcmp(virtual_rn, "oldest"))
+            flag = 1;
+
+        if (flag == 0 || flag == 1)
+        {
+            cin = db_get_cin_laol(parent_rtnode, flag);
+            if (cin)
+            {
+                rtnode = create_rtnode(cin, RT_CIN);
+                if (rtnode)
+                    rtnode->parent = parent_rtnode;
+            }
+
+            free(target_uri);
+            return rtnode;
+        }
+    }
+
+    //4. FlexContainerRI/la 또는 FlexContainerRI/ol
+    if (parent_rtnode->ty == RT_FCNT)
+    {
+        cJSON *fcin = NULL;
+
+        if (!strcmp(virtual_rn, "la") || !strcmp(virtual_rn, "latest"))
+            flag = 0;
+        else if (!strcmp(virtual_rn, "ol") || !strcmp(virtual_rn, "oldest"))
+            flag = 1;
+
+        if (flag == 0 || flag == 1)
+        {
+            fcin = db_get_fcin_laol(parent_rtnode, flag);
+            if (fcin)
+            {
+                rtnode = create_rtnode(fcin, RT_FCIN);
+                if (rtnode)
+                    rtnode->parent = parent_rtnode;
+            }
+
+            free(target_uri);
+            return rtnode;
+        }
+    }
+
+    //5. pcu, ntsr 등 실제 child RTNode로 올라와 있을 수 있는 virtual resource 처리
+#if MONO_THREAD == 0
+    pthread_mutex_lock(&main_lock);
+#endif
+
+    rtnode = parent_rtnode->child;
+    while (rtnode)
+    {
+        if (rtnode->rn && !strcmp(rtnode->rn, virtual_rn))
+            break;
+
+        rtnode = rtnode->sibling_right;
+    }
+
+#if MONO_THREAD == 0
+    pthread_mutex_unlock(&main_lock);
+#endif
+
+    free(target_uri);
+    return rtnode;
+}
+
 /**
  * @brief get resource node with resource identifier
  * @param ri resource identifier
@@ -481,23 +636,15 @@ RTNode *find_rtnode_by_ri(char *ri)
 {
     cJSON *resource = NULL;
     RTNode *rtnode = NULL;
-    char *fopt = strstr(ri, "/fopt");
     // logger("UTIL", LOG_LEVEL_DEBUG, "RI : %s", ri);
     if (strncmp(ri, "4-", 2) == 0)
     {
         resource = db_get_resource(ri, RT_CIN);
         rtnode = create_rtnode(resource, RT_CIN);
-        rtnode->parent = find_rtnode_by_uri(rtnode->uri);
+        rtnode->parent = find_rtnode_by_rn(rtnode->uri);
         return rtnode;
     }
-    else if (strncmp(ri, "9-", 2) == 0)
-    {
-        logger("RTM", LOG_LEVEL_DEBUG, "GRP");
-        if (fopt)
-        {
-            *fopt = '\0';
-        }
-    }
+    
 #if MONO_THREAD == 0
     pthread_mutex_lock(&main_lock);
 #endif
@@ -507,10 +654,6 @@ RTNode *find_rtnode_by_ri(char *ri)
 #if MONO_THREAD == 0
     pthread_mutex_unlock(&main_lock);
 #endif
-    if (fopt)
-    {
-        *fopt = '/';
-    }
     return rtnode;
 }
 
