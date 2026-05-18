@@ -162,6 +162,21 @@ int validate_grp(oneM2MPrimitive *o2pt, cJSON *grp)
             return RSC_OK;
     }
 
+    if ((pjson = cJSON_GetObjectItem(grp, "gn")))
+    {
+        if (!cJSON_IsString(pjson))
+        {
+            handle_error(o2pt, RSC_BAD_REQUEST, "`gn` should be string");
+            return RSC_BAD_REQUEST;
+        }
+
+        if (strlen(pjson->valuestring) == 0)
+        {
+            handle_error(o2pt, RSC_BAD_REQUEST, "`gn` should not be empty");
+            return RSC_BAD_REQUEST;
+        }
+    }
+
     cJSON *midArr = cJSON_GetObjectItem(grp, "mid");
     cJSON *mid_obj = NULL;
 

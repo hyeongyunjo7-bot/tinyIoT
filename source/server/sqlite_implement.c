@@ -636,8 +636,8 @@ int db_store_resource(cJSON *obj, char *uri)
     rc = sqlite3_step(stmt);
     if (rc != SQLITE_DONE)
     {
-        free(sql);
         logger("DB", LOG_LEVEL_ERROR, "Failed Insert SQL: %s, msg : %s", sql, err_msg ? err_msg : "NULL");
+        free(sql);
         sqlite3_finalize(stmt);
         if (need_tx) sqlite3_exec(db, "ROLLBACK;", NULL, NULL, &err_msg);
         sqlite_unlock();
