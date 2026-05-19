@@ -164,15 +164,21 @@ int validate_grp(oneM2MPrimitive *o2pt, cJSON *grp)
 
     if ((pjson = cJSON_GetObjectItem(grp, "gn")))
     {
-        if (!cJSON_IsString(pjson))
+        if (!cJSON_IsString(pjson) || pjson->valuestring == NULL)
         {
             handle_error(o2pt, RSC_BAD_REQUEST, "`gn` should be string");
             return RSC_BAD_REQUEST;
         }
 
-        if (strlen(pjson->valuestring) == 0)
+        if (is_blank_string(pjson->valuestring))
         {
             handle_error(o2pt, RSC_BAD_REQUEST, "`gn` should not be empty");
+            return RSC_BAD_REQUEST;
+        }
+
+        if (strlen(pjson->valuestring) > 30)
+        {
+            handle_error(o2pt, RSC_BAD_REQUEST, "`gn` is too long");
             return RSC_BAD_REQUEST;
         }
     }
