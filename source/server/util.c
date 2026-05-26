@@ -1250,7 +1250,7 @@ int check_mandatory_attributes(oneM2MPrimitive* o2pt)
 		handle_error(o2pt, RSC_BAD_REQUEST, "rvi is mandatory");
 		return -1;
 	}
-	if (!o2pt->fr && o2pt->ty != RT_AE)
+	if ((!o2pt->fr || strlen(o2pt->fr) == 0) && !(o2pt->op == OP_CREATE && o2pt->ty == RT_AE))
 	{
 		handle_error(o2pt, RSC_BAD_REQUEST, "originator is mandatory");
 		return -1;
@@ -1291,41 +1291,42 @@ int check_privilege(oneM2MPrimitive* o2pt, RTNode* rtnode, ACOP acop)
 	{
 		origin = o2pt->fr;
 	}
-	// if target is AE, check ri of resource
-	if (rtnode->ty == RT_AE)
+	// AE/CSR self-access is a resource-specific shortcut. Do not use it
+	// to bypass ACP CREATE privileges for child resources.
+	if (acop != ACOP_CREATE && rtnode->ty == RT_AE)
 	{
-		if (!strcmp(origin, get_ri_rtnode(target_rtnode)))
+		if (origin && !strcmp(origin, get_ri_rtnode(target_rtnode)))
 		{
 			logger("UTIL", LOG_LEVEL_DEBUG, "originator is the owner");
 			return 0;
 		}
 	}
-	// if target is CSR, check csi of resource
-	if (rtnode->ty == RT_CSR)
+	if (acop != ACOP_CREATE && rtnode->ty == RT_CSR)
 	{
-		if (!strcmp(origin, cJSON_GetObjectItem(target_rtnode->obj, "csi")->valuestring))
+		if (origin && !strcmp(origin, cJSON_GetObjectItem(target_rtnode->obj, "csi")->valuestring))
 		{
 			logger("UTIL", LOG_LEVEL_DEBUG, "originator is the owner");
 			return 0;
 		}
 	}
-	// if target has creator, check if originator is the creator
+	// Creator shortcut is only a default-access fallback. It must not grant
+	// CREATE on a parent or bypass explicit ACPs.
 	cJSON *cr = cJSON_GetObjectItem(rtnode->obj, "cr");
-	if (cr && cJSON_IsString(cr))
+	if (acop != ACOP_CREATE && cr && cJSON_IsString(cr) && cJSON_GetObjectItem(rtnode->obj, "acpi") == NULL)
 	{
-		if (!strcmp(origin, cr->valuestring))
+		if (origin && !strcmp(origin, cr->valuestring))
 		{
 			logger("UTIL", LOG_LEVEL_DEBUG, "originator is the creator");
 			return 0;
 		}
 	}
-	// if target's parent is AE, check if originator is that AE
+	// Do not let an ancestor AE owner shortcut bypass child CREATE privilege.
 	RTNode *parent = rtnode->parent;
-	while (parent)
+	while (acop != ACOP_CREATE && parent)
 	{
 		if (parent->ty == RT_AE)
 		{
-			if (!strcmp(origin, get_ri_rtnode(parent)))
+			if (origin && !strcmp(origin, get_ri_rtnode(parent)))
 			{
 				logger("UTIL", LOG_LEVEL_DEBUG, "originator is the parent AE");
 				return 0;
@@ -1372,45 +1373,71 @@ int check_privilege(oneM2MPrimitive* o2pt, RTNode* rtnode, ACOP acop)
 	return false;
 }
 
-int check_macp_privilege(oneM2MPrimitive* o2pt, RTNode* rtnode, ACOP acop)
+static int get_acop_from_acpi_list(oneM2MPrimitive* o2pt, char* origin, cJSON* acpi_list)
 {
-	bool deny = false;
-	if (!o2pt->fr)
+	int acop = 0;
+	cJSON* acpi = NULL;
+
+	if (!origin || !acpi_list || !cJSON_IsArray(acpi_list))
 	{
-		deny = true;
-	}
-#ifdef ADMIN_AE_ID
-	else if (!strcmp(o2pt->fr, ADMIN_AE_ID))
-	{
-		return false;
-	}
-#endif
-	else if (strcmp(o2pt->fr, get_ri_rtnode(rtnode)))
-	{
-		deny = true;
+		return 0;
 	}
 
-	cJSON* macp = cJSON_GetObjectItem(rtnode->obj, "macp");
-	if (macp && cJSON_GetArraySize(macp) > 0)
+	cJSON_ArrayForEach(acpi, acpi_list)
 	{
-		deny = true;
-		if ((get_acop_macp(o2pt, rtnode) & acop) == acop)
+		if (!cJSON_IsString(acpi))
 		{
-			deny = false;
+			continue;
+		}
+
+		RTNode* acp = find_rtnode(acpi->valuestring);
+		if (acp)
+		{
+			acop = (acop | get_acop_origin(o2pt, origin, acp, 0));
 		}
 	}
-	else
-	{
-		deny = false;
-	}
 
-	if (deny)
+	return acop;
+}
+
+int check_macp_privilege(oneM2MPrimitive* o2pt, RTNode* rtnode, ACOP acop)
+{
+	char* origin = o2pt ? o2pt->fr : NULL;
+	if (!o2pt)
 	{
-		handle_error(o2pt, RSC_ORIGINATOR_HAS_NO_PRIVILEGE, "originator has no privilege");
 		return -1;
 	}
+	if (!rtnode || !rtnode->obj || !origin)
+	{
+		return handle_error(o2pt, RSC_ORIGINATOR_HAS_NO_PRIVILEGE, "originator has no privilege");
+	}
 
-	return 0;
+#ifdef ADMIN_AE_ID
+	if (!strcmp(origin, ADMIN_AE_ID))
+	{
+		logger("UTIL", LOG_LEVEL_DEBUG, "fopt privilege allowed by admin");
+		return 0;
+	}
+#endif
+
+	cJSON* macp = cJSON_GetObjectItem(rtnode->obj, "macp");
+	if (macp && cJSON_IsArray(macp) && cJSON_GetArraySize(macp) > 0)
+	{
+		int macp_acop = get_acop_from_acpi_list(o2pt, origin, macp);
+		if ((macp_acop & acop) == acop)
+		{
+			logger("UTIL", LOG_LEVEL_DEBUG, "fopt privilege allowed by macp");
+			return 0;
+		}
+
+		logger("UTIL", LOG_LEVEL_DEBUG, "fopt privilege denied by macp");
+		return handle_error(o2pt, RSC_ORIGINATOR_HAS_NO_PRIVILEGE, "originator has no privilege");
+	}
+
+	// TS-0001 fanOutPoint: if membersAccessControlPolicyIDs is absent,
+	// use the access control policy defined for the parent group resource.
+	logger("UTIL", LOG_LEVEL_DEBUG, "fopt privilege fallback to group acpi/default policy");
+	return check_privilege(o2pt, rtnode, acop);
 }
 
 int get_acop(oneM2MPrimitive* o2pt, char* corigin, RTNode* rtnode)
@@ -1451,19 +1478,10 @@ int get_acop_macp(oneM2MPrimitive* o2pt, RTNode* rtnode)
 {
 	int acop = 0;
 	logger("UTIL", LOG_LEVEL_DEBUG, "get_acop_macp : %s", o2pt->fr);
-	char* origin = NULL;
-	if (!o2pt->fr)
-	{
-		origin = strdup("all");
-	}
-	else
-	{
-		origin = strdup(o2pt->fr);
-	}
+	char* origin = o2pt->fr;
 #ifdef ADMIN_AE_ID
-	if (!strcmp(origin, ADMIN_AE_ID))
+	if (origin && !strcmp(origin, ADMIN_AE_ID))
 	{
-		free(origin);
 		return ALL_ACOP;
 	}
 #endif
@@ -1472,21 +1490,7 @@ int get_acop_macp(oneM2MPrimitive* o2pt, RTNode* rtnode)
 	if (!macp)
 		return 0;
 
-	RTNode* cb = rtnode;
-	while (cb->parent)
-		cb = cb->parent;
-	cJSON* acpi = NULL;
-	cJSON_ArrayForEach(acpi, macp)
-	{
-
-		RTNode* acp = find_rtnode(acpi->valuestring);
-		if (acp)
-		{
-			acop = (acop | get_acop_origin(o2pt, origin, acp, 0));
-		}
-	}
-
-	free(origin);
+	acop = get_acop_from_acpi_list(o2pt, origin, macp);
 	return acop;
 }
 
@@ -1590,6 +1594,19 @@ int check_acco(cJSON* accos, char* ip)
  * @param flag 1 : pvs, 0 : pv
  * @return acop
  */
+static bool acor_matches_group_member(char* acor_ptr, char* origin)
+{
+	if (!acor_ptr || !origin)
+		return false;
+
+	RTNode* grp_rtnode = find_rtnode(acor_ptr);
+	if (!grp_rtnode || grp_rtnode->ty != RT_GRP)
+		return false;
+
+	cJSON* mid = cJSON_GetObjectItem(grp_rtnode->obj, "mid");
+	return cJSON_IsArray(mid) && cJSON_getArrayIdx(mid, origin) != -1;
+}
+
 int get_acop_origin(oneM2MPrimitive* o2pt, char* origin, RTNode* acp_rtnode, int flag)
 {
 	int ret_acop = 0, cnt = 0;
@@ -1649,6 +1666,14 @@ int get_acop_origin(oneM2MPrimitive* o2pt, char* origin, RTNode* acp_rtnode, int
 				}
 				break;
 			}
+			else if (acor_matches_group_member(acor_ptr, origin))
+			{
+				if (check_acco(cJSON_GetObjectItem(acr, "acco"), o2pt->ip))
+				{
+					ret_acop = (ret_acop | cJSON_GetObjectItem(acr, "acop")->valueint);
+				}
+				break;
+			}
 			else if (!strcmp(acor_ptr, "all"))
 			{
 				if (check_acco(cJSON_GetObjectItem(acr, "acco"), o2pt->ip))
@@ -1692,6 +1717,10 @@ int has_acpi_update_privilege(oneM2MPrimitive* o2pt, char* acpi)
 		return 1;
 
 	RTNode* acp = find_rtnode(acpi);
+	
+	if (!acp)
+    	return 0;
+
 	int result = get_acop_origin(o2pt, origin, acp, 1);
 	if ((result & ACOP_UPDATE) == ACOP_UPDATE)
 	{
@@ -3242,7 +3271,6 @@ int notify_to_nu(RTNode* sub_rtnode, cJSON* noti_cjson, int net)
 	o2pt->rvi = CSE_RVI;
 	o2pt->rqi = strdup("notify");
 	o2pt->request_pc = cJSON_Duplicate(noti_cjson, true);
-	
 
 	cJSON_ArrayForEach(pjson, nu)
 	{
@@ -3534,12 +3562,12 @@ bool is_attr_valid(cJSON* obj, ResourceType ty, char* err_msg)
  * Get Request Primitive and acpi attribute and validate it.
  * @param o2pt oneM2M request primitive
  * @param acpiAttr acpi attribute cJSON object
- * @param op operation type
+ * @param requested_acop access control operation required on referenced ACP
  * @return 0 if valid, -1 if invalid
  */
-int validate_acpi(oneM2MPrimitive* o2pt, cJSON* acpiAttr, Operation op)
+int validate_acpi(oneM2MPrimitive* o2pt, cJSON* acpiAttr, ACOP requested_acop)
 {
-	logger("UTIL", LOG_LEVEL_DEBUG, "validate_acpi %d", op);
+	logger("UTIL", LOG_LEVEL_DEBUG, "validate_acpi %d", requested_acop);
 	if (!acpiAttr)
 	{
 		return RSC_OK;
@@ -3555,6 +3583,7 @@ int validate_acpi(oneM2MPrimitive* o2pt, cJSON* acpiAttr, Operation op)
 
 	cJSON* acpi = NULL;
 	int acop = 0;
+	char* origin = o2pt->fr;
 	cJSON_ArrayForEach(acpi, acpiAttr)
 	{
 		RTNode* acp = NULL;
@@ -3564,23 +3593,15 @@ int validate_acpi(oneM2MPrimitive* o2pt, cJSON* acpiAttr, Operation op)
 			return handle_error(o2pt, RSC_BAD_REQUEST, "resource `acp` is not found");
 		}
 
-		if (op == OP_UPDATE)
+		if (!origin)
 		{
-			acop = (acop | get_acop_origin(o2pt, o2pt->fr, acp, 1));
-			if ((acop & op_to_acop(op)) == op_to_acop(op))
-			{
-				break;
-			}
+			continue;
 		}
-		else if (op == OP_CREATE)
+
+		acop = (acop | get_acop_origin(o2pt, origin, acp, 0));
+		if ((acop & requested_acop) == requested_acop)
 		{
-			acop = ACOP_CREATE;
-			// Create does not need to check acop
-			// acop = (acop | get_acop_origin(o2pt, acp, 0));
-			// logger("UTIL", LOG_LEVEL_DEBUG, "acop-pv : %d, op : %d", acop, op);
-			// if((acop & op) == op){
-			// 	break;
-			// }
+			break;
 		}
 	}
 #ifdef ADMIN_AE_ID
@@ -3589,7 +3610,7 @@ int validate_acpi(oneM2MPrimitive* o2pt, cJSON* acpiAttr, Operation op)
 		return RSC_OK;
 	}
 #endif
-	if ((acop & op_to_acop(op)) != op_to_acop(op))
+	if ((acop & requested_acop) != requested_acop)
 	{
 		return handle_error(o2pt, RSC_ORIGINATOR_HAS_NO_PRIVILEGE, "originator has no privilege");
 	}
@@ -3607,6 +3628,7 @@ int validate_acr(oneM2MPrimitive* o2pt, cJSON* acr_attr)
 {
 	cJSON* acr = NULL;
 	cJSON* acop = NULL;
+	cJSON* acor = NULL;
 	cJSON* acco = NULL;
 	cJSON* acip = NULL;
 	cJSON* ipv4 = NULL;
@@ -3614,10 +3636,26 @@ int validate_acr(oneM2MPrimitive* o2pt, cJSON* acr_attr)
 
 	int mask = 0;
 
+	if (!acr_attr || !cJSON_IsArray(acr_attr))
+	{
+		return handle_error(o2pt, RSC_BAD_REQUEST, "attribute `acr` is in invalid form");
+	}
+
 	cJSON_ArrayForEach(acr, acr_attr)
 	{
+		if (!cJSON_IsObject(acr))
+		{
+			return handle_error(o2pt, RSC_BAD_REQUEST, "attribute `acr` is in invalid form");
+		}
+
+		acor = cJSON_GetObjectItem(acr, "acor");
+		if (!acor || !cJSON_IsArray(acor) || cJSON_GetArraySize(acor) == 0)
+		{
+			return handle_error(o2pt, RSC_BAD_REQUEST, "attribute `acor` is invalid");
+		}
+
 		acop = cJSON_GetObjectItem(acr, "acop");
-		if (acop->valueint > 63 || acop->valueint < 0)
+		if (!acop || !cJSON_IsNumber(acop) || acop->valueint > 63 || acop->valueint < 0)
 		{
 			return handle_error(o2pt, RSC_BAD_REQUEST, "attribute `acop` is invalid");
 		}
@@ -3629,6 +3667,11 @@ int validate_acr(oneM2MPrimitive* o2pt, cJSON* acr_attr)
 			{
 				cJSON_ArrayForEach(ipv4, cJSON_GetObjectItem(acip, "ipv4"))
 				{
+					ptr = NULL;
+					if (!cJSON_IsString(ipv4))
+					{
+						return handle_error(o2pt, RSC_BAD_REQUEST, "ip in attribute `acip` is invalid");
+					}
 					if ((ptr = strchr(ipv4->valuestring, '/')))
 					{
 						mask = atoi(ptr + 1);
@@ -3641,7 +3684,8 @@ int validate_acr(oneM2MPrimitive* o2pt, cJSON* acr_attr)
 					struct sockaddr_in sa;
 					if (inet_pton(AF_INET, ipv4->valuestring, &(sa.sin_addr)) != 1)
 					{
-						*ptr = '/';
+						if (ptr)
+							*ptr = '/';
 						return handle_error(o2pt, RSC_BAD_REQUEST, "ip in attribute `acip` is invalid");
 					}
 					if (ptr)

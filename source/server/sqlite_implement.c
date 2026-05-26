@@ -194,7 +194,7 @@ static const table_def_t table_definitions[] = {
      "st INT, cs INT, fcied INT, mni INT, mbs INT, mia INT, cni INT, cbs INT, "
      "custom_attrs TEXT, loc TEXT, daci VARCHAR(200), "
      "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
-    }
+    },
     {"ts",
      "CREATE TABLE IF NOT EXISTS ts ( id INTEGER, "
      "cr VARCHAR(45), mni INT, mbs INT, mia INT, cni INT, cbs INT, "

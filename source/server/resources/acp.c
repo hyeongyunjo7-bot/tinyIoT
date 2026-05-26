@@ -1,4 +1,6 @@
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdbool.h>
 #include "../onem2m.h"
 #include "../logger.h"
 #include "../util.h"
@@ -7,6 +9,34 @@
 
 extern ResourceTree *rt;
 extern cJSON *ATTRIBUTES;
+
+static int validate_acp_acr(oneM2MPrimitive *o2pt, cJSON *privilege, const char *name, bool require_non_empty)
+{
+    if (!privilege || !cJSON_IsObject(privilege))
+    {
+        char err[128] = {0};
+        snprintf(err, sizeof(err), "attribute `%s` is in invalid form", name);
+        return handle_error(o2pt, RSC_BAD_REQUEST, err);
+    }
+
+    cJSON *acr = cJSON_GetObjectItem(privilege, "acr");
+    if (!acr || !cJSON_IsArray(acr))
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "insufficient mandatory attribute(s)");
+    }
+
+    if (require_non_empty && cJSON_GetArraySize(acr) == 0)
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "empty `acr` is not allowed");
+    }
+
+    if (validate_acr(o2pt, acr) != RSC_OK)
+    {
+        return o2pt->rsc;
+    }
+
+    return RSC_OK;
+}
 
 int create_acp(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 {
@@ -152,8 +182,6 @@ int update_acp(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 int validate_acp(oneM2MPrimitive *o2pt, cJSON *acp, Operation op)
 {
     cJSON *pjson = NULL;
-    cJSON *pjson2 = NULL;
-    char *ptr = NULL;
     if (!acp)
     {
         return handle_error(o2pt, RSC_BAD_REQUEST, "insufficient mandatory attribute(s)");
@@ -166,14 +194,13 @@ int validate_acp(oneM2MPrimitive *o2pt, cJSON *acp, Operation op)
         {
             return handle_error(o2pt, RSC_BAD_REQUEST, "insufficient mandatory attribute(s)");
         }
-        else if (pjson->type == cJSON_NULL)
+        if (cJSON_IsNull(pjson))
         {
             return handle_error(o2pt, RSC_BAD_REQUEST, "null `pv` is not allowed");
         }
-        else
+        if (validate_acp_acr(o2pt, pjson, "pv", false) != RSC_OK)
         {
-            if (validate_acr(o2pt, cJSON_GetObjectItem(pjson, "acr")) != RSC_OK)
-                return o2pt->rsc;
+            return o2pt->rsc;
         }
 
         pjson = cJSON_GetObjectItem(acp, "pvs");
@@ -185,23 +212,9 @@ int validate_acp(oneM2MPrimitive *o2pt, cJSON *acp, Operation op)
         {
             return handle_error(o2pt, RSC_BAD_REQUEST, "null `pvs` is not allowed");
         }
-        else if ((pjson2 = cJSON_GetObjectItem(pjson, "acr")))
+        if (validate_acp_acr(o2pt, pjson, "pvs", true) != RSC_OK)
         {
-            if (cJSON_GetArraySize(pjson2) == 0)
-            {
-                return handle_error(o2pt, RSC_BAD_REQUEST, "empty `acr` is not allowed");
-            }
-        }
-        else if (pjson2 == NULL)
-        {
-            return handle_error(o2pt, RSC_BAD_REQUEST, "insufficient mandatory attribute(s)");
-        }
-        else
-        {
-            if (validate_acr(o2pt, cJSON_GetObjectItem(pjson, "acr")) != RSC_OK)
-            {
-                return o2pt->rsc;
-            }
+            return o2pt->rsc;
         }
     }
     if (op == OP_UPDATE)
@@ -213,10 +226,7 @@ int validate_acp(oneM2MPrimitive *o2pt, cJSON *acp, Operation op)
             {
                 return handle_error(o2pt, RSC_BAD_REQUEST, "empty `pv` is not allowed");
             }
-        }
-        else
-        {
-            if (validate_acr(o2pt, cJSON_GetObjectItem(pjson, "acr")) != RSC_OK)
+            if (validate_acp_acr(o2pt, pjson, "pv", false) != RSC_OK)
             {
                 return o2pt->rsc;
             }
@@ -225,14 +235,11 @@ int validate_acp(oneM2MPrimitive *o2pt, cJSON *acp, Operation op)
         pjson = cJSON_GetObjectItem(acp, "pvs");
         if (pjson)
         {
-            if (cJSON_IsNull(pjson) || !cJSON_GetObjectItem(pjson, "acr"))
+            if (cJSON_IsNull(pjson))
             {
                 return handle_error(o2pt, RSC_BAD_REQUEST, "empty `pvs` is not allowed");
             }
-        }
-        else
-        {
-            if (validate_acr(o2pt, cJSON_GetObjectItem(pjson, "acr")) != RSC_OK)
+            if (validate_acp_acr(o2pt, pjson, "pvs", true) != RSC_OK)
             {
                 return o2pt->rsc;
             }

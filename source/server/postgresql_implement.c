@@ -1580,7 +1580,7 @@ cJSON *db_get_filter_criteria(oneM2MPrimitive *o2pt)
         return cJSON_CreateArray();
     }
 
-    char sql[2048] = {0};
+    char sql[8192] = {0};
     char buf[256] = {0};
     PGresult *res;
     cJSON *fc = o2pt->fc;
@@ -1708,6 +1708,60 @@ cJSON *db_get_filter_criteria(oneM2MPrimitive *o2pt)
     if ((pjson = cJSON_GetObjectItem(fc, "stb"))) {
         sprintf(buf, " AND id IN (SELECT id FROM cnt WHERE st >= %d UNION SELECT id FROM fcnt WHERE st >= %d)", pjson->valueint, pjson->valueint);
         strcat(sql, buf);
+    }
+
+    // Keep PostgreSQL discovery filtering aligned with the SQLite backend:
+    // exclude subtrees whose ACPs do not grant discovery privileges.
+    cJSON *acpiList = getNonDiscoverableAcp(o2pt, rt->cb);
+    cJSON *forbiddenURI = getForbiddenUri(acpiList);
+    if (forbiddenURI && cJSON_GetArraySize(forbiddenURI) > 0) {
+        int first_forbidden = 1;
+        cJSON_ArrayForEach(ptr, forbiddenURI) {
+            if (cJSON_IsString(ptr)) {
+                char *escaped_forbidden = pg_escape_string_value(cJSON_GetStringValue(ptr));
+                if (first_forbidden) {
+                    strcat(sql, " AND (");
+                } else {
+                    strcat(sql, " AND ");
+                }
+                sprintf(buf, "uri NOT LIKE '%s%%'", escaped_forbidden);
+                strcat(sql, buf);
+                free(escaped_forbidden);
+                first_forbidden = 0;
+            }
+        }
+        if (!first_forbidden) {
+            strcat(sql, ")");
+        }
+    }
+    cJSON_Delete(forbiddenURI);
+    cJSON_Delete(acpiList);
+
+    if ((pjson = cJSON_GetObjectItem(fc, "ops"))) {
+        acpiList = getNoPermAcopDiscovery(o2pt, rt->cb, pjson->valueint);
+        forbiddenURI = getForbiddenUri(acpiList);
+        if (forbiddenURI && cJSON_GetArraySize(forbiddenURI) > 0) {
+            int first_forbidden = 1;
+            cJSON_ArrayForEach(ptr, forbiddenURI) {
+                if (cJSON_IsString(ptr)) {
+                    char *escaped_forbidden = pg_escape_string_value(cJSON_GetStringValue(ptr));
+                    if (first_forbidden) {
+                        strcat(sql, " AND (");
+                    } else {
+                        strcat(sql, " AND ");
+                    }
+                    sprintf(buf, "uri NOT LIKE '%s%%'", escaped_forbidden);
+                    strcat(sql, buf);
+                    free(escaped_forbidden);
+                    first_forbidden = 0;
+                }
+            }
+            if (!first_forbidden) {
+                strcat(sql, ")");
+            }
+        }
+        cJSON_Delete(forbiddenURI);
+        cJSON_Delete(acpiList);
     }
 
     // Add ordering and limit

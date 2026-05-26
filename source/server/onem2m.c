@@ -706,6 +706,54 @@ void free_rtnode_list(RTNode *rtnode)
 	}
 }
 
+static bool has_candidate_discovery_privilege(oneM2MPrimitive *o2pt, cJSON *candidate)
+{
+	cJSON *val = cJSON_GetObjectItem(candidate, "val");
+	if (!val || !cJSON_IsString(val))
+	{
+		return false;
+	}
+
+	RTNode *candidate_rtnode = find_rtnode(val->valuestring);
+	if (!candidate_rtnode)
+	{
+		candidate_rtnode = find_rtnode_by_ri(val->valuestring);
+	}
+	if (!candidate_rtnode)
+	{
+		logger("MAIN", LOG_LEVEL_DEBUG, "Discovery candidate not found: %s", val->valuestring);
+		return false;
+	}
+
+	oneM2MPrimitive *probe = NULL;
+	o2ptcpy(&probe, o2pt);
+	if (!probe)
+	{
+		return false;
+	}
+
+	int allowed = check_privilege(probe, candidate_rtnode, ACOP_DISCOVERY);
+	free_o2pt(probe);
+	return allowed == 0;
+}
+
+static cJSON *filter_discovery_candidates(oneM2MPrimitive *o2pt, cJSON *candidates)
+{
+	cJSON *filtered = cJSON_CreateArray();
+	cJSON *candidate = NULL;
+
+	cJSON_ArrayForEach(candidate, candidates)
+	{
+		if (has_candidate_discovery_privilege(o2pt, candidate))
+		{
+			cJSON_AddItemToArray(filtered, cJSON_Duplicate(candidate, true));
+		}
+	}
+
+	cJSON_Delete(candidates);
+	return filtered;
+}
+
 int create_onem2m_resource(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 {
 	int rsc = 0;
@@ -1048,19 +1096,9 @@ int fopt_onem2m_resource(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 
 	mt = cJSON_GetObjectItem(parent_rtnode->obj, "mt")->valueint;
 
-	if (cJSON_GetObjectItem(parent_rtnode->obj, "macp"))
+	if (check_macp_privilege(o2pt, parent_rtnode, op_to_acop(o2pt->op)) == -1)
 	{
-		if (check_macp_privilege(o2pt, parent_rtnode, op_to_acop(o2pt->op)) == -1)
-		{
-			return o2pt->rsc;
-		}
-	}
-	else if (cJSON_GetObjectItem(parent_rtnode->obj, "acpi"))
-	{
-		if (check_privilege(o2pt, parent_rtnode, op_to_acop(o2pt->op)) == -1)
-		{
-			return o2pt->rsc;
-		}
+		return o2pt->rsc;
 	}
 
 	grp = parent_rtnode->obj;
@@ -1239,6 +1277,14 @@ int discover_onem2m_resource(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 	o2pt->to = strdup(target_rtnode->uri);
 
 	list = db_get_filter_criteria(o2pt);
+	if (!list)
+	{
+		free(o2pt->to);
+		o2pt->to = orig_to;
+		cJSON_Delete(root);
+		return handle_error(o2pt, RSC_INTERNAL_SERVER_ERROR, "DB discovery fail");
+	}
+	list = filter_discovery_candidates(o2pt, list);
 	lSize = cJSON_GetArraySize(list);
 	cJSON *lim_obj = cJSON_GetObjectItem(fc, "lim");
 	cJSON *ofst_obj = cJSON_GetObjectItem(fc, "ofst");
