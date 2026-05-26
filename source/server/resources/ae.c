@@ -150,15 +150,17 @@ int update_ae(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
     bool acpi_flag = false;
     if (cJSON_GetObjectItem(m2m_ae, "acpi"))
     {
+        cJSON *new_acpi = cJSON_GetObjectItem(m2m_ae, "acpi");
         cJSON_ArrayForEach(orig_acpi_obj, cJSON_GetObjectItem(target_rtnode->obj, "acpi"))
         {
-            if (cJSON_getArrayIdx(cJSON_GetObjectItem(m2m_ae, "acpi"), orig_acpi_obj->valuestring) == -1)
+            if (!has_acpi_update_privilege(o2pt, orig_acpi_obj->valuestring))
+            {
+                return handle_error(o2pt, RSC_ORIGINATOR_HAS_NO_PRIVILEGE, "no privilege to update acpi");
+            }
+
+            if (cJSON_IsArray(new_acpi) && cJSON_getArrayIdx(new_acpi, orig_acpi_obj->valuestring) == -1)
             {
                 logger("UTIL", LOG_LEVEL_INFO, "acpi deleted : %s", orig_acpi_obj->valuestring);
-                if (!has_acpi_update_privilege(o2pt, orig_acpi_obj->valuestring))
-                {
-                    return handle_error(o2pt, RSC_ORIGINATOR_HAS_NO_PRIVILEGE, "no privilege to update acpi");
-                }
             }
         }
     }
@@ -322,8 +324,12 @@ int validate_ae(oneM2MPrimitive *o2pt, cJSON *ae, Operation op)
                 handle_error(o2pt, RSC_BAD_REQUEST, "only attribute `acpi` is allowed when updating `acpi`");
                 return RSC_BAD_REQUEST;
             }
-
-            validate_acpi(o2pt, pjson, op_to_acop(op));
+            if (!cJSON_IsNull(pjson))
+            {
+                int result = validate_acpi(o2pt, pjson, op_to_acop(op));
+                if (result != RSC_OK)
+                    return result;
+            }
         }
 
         if (!cJSON_IsNull(pjson) && cJSON_GetArraySize(pjson) == 0)
@@ -339,8 +345,7 @@ int check_aei_invalid(oneM2MPrimitive *o2pt)
 {
     char *aei = o2pt->fr;
     if (!aei || strlen(aei) == 0) {
-        handle_error(o2pt, RSC_BAD_REQUEST, "originator is mandatory");
-        return -1;
+        return 0;
     }
     
     if (strcmp(aei, CSE_BASE_RI) == 0) {
