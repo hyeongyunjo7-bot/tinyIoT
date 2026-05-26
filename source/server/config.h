@@ -35,7 +35,7 @@
 #define PG_HOST "localhost"
 #define PG_PORT 5432
 #define PG_USER "tinyuser"
-#define PG_PASSWORD "password"
+#define PG_PASSWORD "tinypass"
 #define PG_DBNAME "tinydb"
 
 // PostgreSQL Schema Types
