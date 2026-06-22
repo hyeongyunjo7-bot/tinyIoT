@@ -1968,6 +1968,22 @@ char* from_rvi(RVI rvi)
 	}
 }
 
+bool is_blank_string(const char *s)
+{
+    if (s == NULL) {
+        return true;
+    }
+
+    while (*s) {
+        if (!isspace((unsigned char)*s)) {
+            return false;
+        }
+        s++;
+    }
+
+    return true;
+}
+
 /**
  * @brief set rsc and error msg to oneM2MPrimitive
  * @param o2pt oneM2MPrimitive

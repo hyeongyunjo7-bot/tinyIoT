@@ -4,27 +4,10 @@
 #include "../util.h"
 #include "../dbmanager.h"
 #include "../config.h"
-#include <ctype.h>
 #include <stdbool.h>
 
 extern ResourceTree *rt;
 extern cJSON *ATTRIBUTES;
-
-static bool is_blank_string(const char *s)
-{
-    if (s == NULL) {
-        return true;
-    }
-
-    while (*s) {
-        if (!isspace((unsigned char)*s)) {
-            return false;
-        }
-        s++;
-    }
-
-    return true;
-}
 
 int create_grp(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 {
