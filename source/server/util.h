@@ -7,6 +7,8 @@
 #include "httpd.h"
 #include "websocket/websocket_server.h"
 
+#include <stdbool.h>
+
 bool init_server();
 
 void set_o2pt_rsc(oneM2MPrimitive* o2pt, int rsc);
@@ -146,6 +148,7 @@ void free_all_nodelist(NodeList* nl);
 void free_nodelist(NodeList* nl);
 RVI to_rvi(char* str);
 char* from_rvi(RVI rvi);
+bool is_blank_string(const char *s);
 
 // privilege
 int get_acop(oneM2MPrimitive* o2pt, char* origin, RTNode* node);

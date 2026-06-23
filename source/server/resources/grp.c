@@ -4,6 +4,7 @@
 #include "../util.h"
 #include "../dbmanager.h"
 #include "../config.h"
+#include <stdbool.h>
 
 extern ResourceTree *rt;
 extern cJSON *ATTRIBUTES;
