@@ -27,6 +27,8 @@ int create_annc(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
         break;
     case RT_CINA:
         break;
+    case RT_FCNTA:
+        break;
     }
 
     cJSON *root = cJSON_Duplicate(o2pt->request_pc, 1);

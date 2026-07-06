@@ -349,6 +349,8 @@ ResourceType parse_object_type_cjson(cJSON* cjson)
 		ty = RT_CNTA;
 	else if (cJSON_GetObjectItem(cjson, "m2m:cina"))
 		ty = RT_CINA;
+	else if (cJSON_GetObjectItem(cjson, "m2m:fcntA"))
+		ty = RT_FCNTA;
 	else if (cJSON_GetObjectItem(cjson, "m2m:fcnt"))
 		ty = RT_FCNT;
 	else
@@ -4589,7 +4591,7 @@ bool isValidChildType(ResourceType parent, ResourceType child)
 		break;
 	case RT_CSE:
 		if (child == RT_ACP || child == RT_AE || child == RT_CNT || child == RT_GRP || child == RT_SUB ||
-			child == RT_CSR || child == RT_NOD || child == RT_MGMTOBJ || child == RT_CBA || child == RT_FCNT)
+			child == RT_CSR || child == RT_NOD || child == RT_MGMTOBJ || child == RT_CBA || child == RT_FCNT || child == RT_FCNTA)
 			return true;
 		break;
 	case RT_GRP:

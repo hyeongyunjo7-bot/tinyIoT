@@ -892,6 +892,7 @@ int create_onem2m_resource(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 	case RT_CBA:
 	case RT_CNTA:
 	case RT_CINA:
+	case RT_FCNTA:
 	case RT_GRPA:
 		logger("O2M", LOG_LEVEL_INFO, "Create ANNC");
 		rsc = create_annc(o2pt, parent_rtnode);
@@ -1055,6 +1056,7 @@ int update_onem2m_resource(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 	case RT_AEA:
 	case RT_CNTA:
 	case RT_CINA:
+	case RT_FCNTA:
 	case RT_GRPA:
 		update_annc(o2pt, target_rtnode);
 		break;

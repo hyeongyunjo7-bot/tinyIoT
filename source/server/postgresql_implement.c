@@ -279,6 +279,11 @@ static const table_def_t table_definitions[] = {
      "lnk VARCHAR(100), cs INT, cr VARCHAR(45), cnf VARCHAR(45), st VARCHAR(45), con TEXT, ast INT, "
      "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
     },
+    {"fcntA",
+     "CREATE TABLE IF NOT EXISTS fcntA ( id INTEGER, "
+     "lnk VARCHAR(100), cnd VARCHAR(255), nl VARCHAR(45), mni INT, mbs INT, mia INT, ast INT, loc TEXT, daci VARCHAR(200), "
+     "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
+    },
     {"fcnt",
      "CREATE TABLE IF NOT EXISTS fcnt ( id INTEGER, "
      "cnd VARCHAR(255), oref VARCHAR(100), nl VARCHAR(45), cr VARCHAR(45), at VARCHAR(200), aa VARCHAR(100), ast INT, "
@@ -361,6 +366,11 @@ static const table_def_t table_definitions[] = {
     {"cinA",
      "CREATE TABLE IF NOT EXISTS cinA ( id INTEGER, "
      "lnk TEXT, cs INT, cr TEXT, cnf TEXT, st TEXT, con TEXT, ast INT, "
+     "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
+    },
+    {"fcntA",
+     "CREATE TABLE IF NOT EXISTS fcntA ( id INTEGER, "
+     "lnk TEXT, cnd TEXT, nl TEXT, mni INT, mbs INT, mia INT, ast INT, loc TEXT, daci TEXT, "
      "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
     },
     {"fcnt",
@@ -512,6 +522,9 @@ char *get_table_name(ResourceType ty)
         break;
     case RT_CINA:
         tableName = "cinA";
+        break;
+    case RT_FCNTA:
+        tableName = "fcntA";
         break;
     case RT_FCNT:
         tableName = "fcnt";
@@ -769,6 +782,13 @@ int db_store_resource(cJSON *obj, char *uri)
     }
     ResourceType ty = ty_obj->valueint;
     logger("DB", LOG_LEVEL_DEBUG, "Resource type: %d", ty);
+
+    char *table_name = get_table_name(ty);
+    if (!table_name) {
+        logger("DB", LOG_LEVEL_ERROR, "No table mapping for resource type %d", ty);
+        pg_unlock();
+        return -1;
+    }
     
     // Debug: Print key fields
     debug_print_cjson_type_and_value("ty field", ty_obj);
@@ -838,7 +858,7 @@ int db_store_resource(cJSON *obj, char *uri)
         if (i < general_cnt - 1) strcat(sql, ",");
     }
     strcat(sql, ") RETURNING id) INSERT INTO ");
-    strcat(sql, get_table_name(ty));
+    strcat(sql, table_name);
     strcat(sql, " (id, ");
 
     for (int i = 0; i < cJSON_GetArraySize(specific_attr); i++) {

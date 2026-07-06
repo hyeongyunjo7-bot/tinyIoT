@@ -183,6 +183,11 @@ static const table_def_t table_definitions[] = {
      "lnk VARCHAR(100), cs INT, cr VARCHAR(45), cnf VARCHAR(45), st VARCHAR(45), con TEXT, ast INT, "
      "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
     },
+    {"fcntA",
+     "CREATE TABLE IF NOT EXISTS fcntA ( id INTEGER, "
+     "lnk VARCHAR(100), cnd VARCHAR(200), nl VARCHAR(45), mni INT, mbs INT, mia INT, ast INT, loc TEXT, daci VARCHAR(200), "
+     "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
+    },
     {"fcin",
      "CREATE TABLE IF NOT EXISTS fcin ( id INTEGER, "
      "cs INT, st INT, org VARCHAR(200), loc TEXT, at VARCHAR(200), aa VARCHAR(100), ast INT, custom_attrs TEXT, "
@@ -341,6 +346,9 @@ char *get_table_name(ResourceType ty)
         break;
     case RT_CINA:
         tableName = "cinA";
+        break;
+    case RT_FCNTA:
+        tableName = "fcntA";
         break;
     case RT_FCIN:
         tableName = "fcin";
@@ -574,6 +582,13 @@ int db_store_resource(cJSON *obj, char *uri)
     ResourceType ty = ty_obj->valueint;
     logger("DB", LOG_LEVEL_DEBUG, "Resource type: %d", ty);
 
+    char *table_name = get_table_name(ty);
+    if (!table_name) {
+        logger("DB", LOG_LEVEL_ERROR, "No table mapping for resource type %d", ty);
+        sqlite_unlock();
+        return -1;
+    }
+
     sql = malloc(1024);
     sprintf(sql, "INSERT INTO general (");
     for (int i = 0; i < general_cnt; i++)
@@ -657,7 +672,7 @@ int db_store_resource(cJSON *obj, char *uri)
     }
 
     sql[0] = '\0';
-    sprintf(sql, "INSERT INTO %s (id, ", get_table_name(ty));
+    sprintf(sql, "INSERT INTO %s (id, ", table_name);
     for (int i = 0; i < cJSON_GetArraySize(specific_attr); i++)
     {
         strcat(sql, cJSON_GetArrayItem(specific_attr, i)->string);
