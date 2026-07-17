@@ -279,11 +279,11 @@ static const table_def_t table_definitions[] = {
      "lnk VARCHAR(100), cs INT, cr VARCHAR(45), cnf VARCHAR(45), st VARCHAR(45), con TEXT, ast INT, "
      "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
     },
-    {"fcntA",
-     "CREATE TABLE IF NOT EXISTS fcntA ( id INTEGER, "
-     "lnk VARCHAR(100), cnd VARCHAR(255), nl VARCHAR(45), mni INT, mbs INT, mia INT, ast INT, loc TEXT, daci VARCHAR(200), "
-     "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
-    },
+	    {"fcntA",
+	     "CREATE TABLE IF NOT EXISTS fcntA ( id INTEGER, "
+	     "lnk VARCHAR(100), cnd VARCHAR(255), nl VARCHAR(45), mni INT, mbs INT, mia INT, ast INT, loc TEXT, daci VARCHAR(200), custom_attrs JSONB, "
+	     "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
+	    },
     {"fcnt",
      "CREATE TABLE IF NOT EXISTS fcnt ( id INTEGER, "
      "cnd VARCHAR(255), oref VARCHAR(100), nl VARCHAR(45), cr VARCHAR(45), at VARCHAR(200), aa VARCHAR(100), ast INT, "
@@ -368,11 +368,11 @@ static const table_def_t table_definitions[] = {
      "lnk TEXT, cs INT, cr TEXT, cnf TEXT, st TEXT, con TEXT, ast INT, "
      "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
     },
-    {"fcntA",
-     "CREATE TABLE IF NOT EXISTS fcntA ( id INTEGER, "
-     "lnk TEXT, cnd TEXT, nl TEXT, mni INT, mbs INT, mia INT, ast INT, loc TEXT, daci TEXT, "
-     "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
-    },
+	    {"fcntA",
+	     "CREATE TABLE IF NOT EXISTS fcntA ( id INTEGER, "
+	     "lnk TEXT, cnd TEXT, nl TEXT, mni INT, mbs INT, mia INT, ast INT, loc TEXT, daci TEXT, custom_attrs JSONB, "
+	     "CONSTRAINT fk_id FOREIGN KEY (id) REFERENCES general(id) ON DELETE CASCADE );"
+	    },
     {"fcnt",
      "CREATE TABLE IF NOT EXISTS fcnt ( id INTEGER, "
      "cnd TEXT, oref TEXT, nl TEXT, cr TEXT, at TEXT, aa TEXT, ast INT, "
@@ -448,15 +448,23 @@ int init_dbp()
     }
 
     // Create all tables
-    for (size_t i = 0; i < TABLE_COUNT; i++) {
-        if (!create_table(&table_definitions[i])) {
+	    for (size_t i = 0; i < TABLE_COUNT; i++) {
+	        if (!create_table(&table_definitions[i])) {
             PQexec(conn, "ROLLBACK");
             PQfinish(conn);
             pg_conn = NULL;
             pg_unlock();
             return 0;
-        }
-    }
+	        }
+	    }
+
+	    if (!execute_sql_with_error_handling("ALTER TABLE fcntA ADD COLUMN IF NOT EXISTS custom_attrs JSONB", "Add fcntA custom_attrs")) {
+	        PQexec(conn, "ROLLBACK");
+	        PQfinish(conn);
+	        pg_conn = NULL;
+	        pg_unlock();
+	        return 0;
+	    }
 
     // Commit transaction
     if (!execute_sql_with_error_handling("COMMIT", "Commit Transaction")) {
@@ -608,7 +616,7 @@ cJSON *db_get_resource_by_uri(char *uri, ResourceType ty)
     PQclear(res);
 
     // For FlexContainer/FlexContainerInstance, merge custom_attrs into the main resource object
-    if (ty == RT_FCNT || ty == RT_FCIN) {
+	    if (ty == RT_FCNT || ty == RT_FCIN || ty == RT_FCNTA) {
         cJSON *custom_attrs = cJSON_GetObjectItem(resource, "custom_attrs");
         if (custom_attrs && cJSON_IsObject(custom_attrs)) {
             // Merge each custom attribute into the main resource
@@ -700,7 +708,7 @@ cJSON *db_get_resource(char *ri, ResourceType ty)
     PQclear(res);
 
     // For FlexContainer/FlexContainerInstance, merge custom_attrs into the main resource object
-    if (ty == RT_FCNT || ty == RT_FCIN) {
+	    if (ty == RT_FCNT || ty == RT_FCIN || ty == RT_FCNTA) {
         cJSON *custom_attrs = cJSON_GetObjectItem(resource, "custom_attrs");
         if (custom_attrs && cJSON_IsObject(custom_attrs)) {
             // Merge each custom attribute into the main resource
@@ -1308,7 +1316,7 @@ RTNode *db_get_all_resource_as_rtnode()
         cJSON_DeleteItemFromObject(json, "id");
 
         // FCNT: custom_attrs를 top-level로 병합 후 제거 (db_get_resource와 동일)
-        if (ty == RT_FCNT) {
+	        if (ty == RT_FCNT || ty == RT_FCNTA) {
             cJSON *custom_attrs = cJSON_GetObjectItem(json, "custom_attrs");
             if (custom_attrs && cJSON_IsObject(custom_attrs)) {
                 cJSON *item = NULL;
@@ -2041,6 +2049,94 @@ cJSON *db_get_fcnt_custom_attributes(const char *ri)
     cJSON *customAttrs = cJSON_Parse(json_str);
     PQclear(res);
 
+    return customAttrs;
+}
+
+int db_store_fcnta_custom_attributes(const char *ri, cJSON *customAttrs)
+{
+    if (!ri || !customAttrs) {
+        return 0;
+    }
+
+    char *json_str = cJSON_PrintUnformatted(customAttrs);
+    if (!json_str) {
+        return 0;
+    }
+
+    char *escaped_json = pg_escape_string_value(json_str);
+    char *escaped_ri = pg_escape_string_value(ri);
+    free(json_str);
+
+    if (!escaped_json || !escaped_ri) {
+        free(escaped_json);
+        free(escaped_ri);
+        return 0;
+    }
+
+    char sql[4096] = {0};
+    sprintf(sql, "UPDATE fcntA SET custom_attrs = '%s'::jsonb WHERE id = (SELECT id FROM general WHERE ri = '%s');",
+            escaped_json, escaped_ri);
+
+    logger("DB", LOG_LEVEL_DEBUG, "db_store_fcnta_custom_attributes SQL: %s", sql);
+
+    PGresult *res = PQexec(pg_conn, sql);
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        logger("DB", LOG_LEVEL_ERROR, "Failed to store FCNTA custom attributes: %s", PQerrorMessage(pg_conn));
+        PQclear(res);
+        free(escaped_json);
+        free(escaped_ri);
+        return 0;
+    }
+
+    PQclear(res);
+    free(escaped_json);
+    free(escaped_ri);
+    return 1;
+}
+
+int db_update_fcnta_custom_attributes(const char *ri, cJSON *customAttrs)
+{
+    return db_store_fcnta_custom_attributes(ri, customAttrs);
+}
+
+cJSON *db_get_fcnta_custom_attributes(const char *ri)
+{
+    if (!ri) {
+        return NULL;
+    }
+
+    char *escaped_ri = pg_escape_string_value(ri);
+    if (!escaped_ri) {
+        return NULL;
+    }
+
+    char sql[1024] = {0};
+    sprintf(sql, "SELECT fcntA.custom_attrs AS custom_attrs FROM general LEFT JOIN fcntA ON general.id = fcntA.id WHERE general.ri = '%s';", escaped_ri);
+    free(escaped_ri);
+
+    logger("DB", LOG_LEVEL_DEBUG, "db_get_fcnta_custom_attributes SQL: %s", sql);
+
+    PGresult *res = PQexec(pg_conn, sql);
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        logger("DB", LOG_LEVEL_ERROR, "Failed to get FCNTA custom attributes: %s", PQerrorMessage(pg_conn));
+        PQclear(res);
+        return NULL;
+    }
+
+    int rows = PQntuples(res);
+    if (rows == 0) {
+        PQclear(res);
+        return NULL;
+    }
+
+    char *json_str = PQgetvalue(res, 0, 0);
+    if (!json_str || strlen(json_str) == 0 || strcmp(json_str, "null") == 0) {
+        PQclear(res);
+        return NULL;
+    }
+
+    cJSON *customAttrs = cJSON_Parse(json_str);
+    PQclear(res);
     return customAttrs;
 }
 

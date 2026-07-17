@@ -112,6 +112,7 @@ int create_cba(oneM2MPrimitive *o2pt, RTNode *parent_rtnode);
 int create_aea(oneM2MPrimitive *o2pt, RTNode *parent_rtnode);
 int create_fcnt(oneM2MPrimitive *o2pt, RTNode *parent_rtnode);
 int create_fcin(oneM2MPrimitive *o2pt, RTNode *parent_rtnode);
+int fcnt_deannounce_remote(RTNode *fcnt_rtnode);
 
 int update_cse(oneM2MPrimitive *o2pt, RTNode *target_rtnode);
 int update_ae(oneM2MPrimitive *o2pt, RTNode *target_rtnode);

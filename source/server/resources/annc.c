@@ -9,6 +9,102 @@
 extern ResourceTree *rt;
 extern cJSON *ATTRIBUTES;
 
+static bool is_standard_fcnta_attribute(const char *attr)
+{
+    if (!attr)
+        return true;
+
+    const char *fixed[] = {
+        "rn", "ri", "pi", "ct", "lt", "ty", "acpi", "lbl", "loc", "et", "memberOf",
+        "lnk", "cnd", "nl", "mni", "mbs", "mia", "ast", "daci", "custom_attrs",
+        NULL
+    };
+
+    for (int i = 0; fixed[i]; i++)
+    {
+        if (strcmp(attr, fixed[i]) == 0)
+            return true;
+    }
+
+    return false;
+}
+
+static cJSON *extract_fcnta_custom_attributes(cJSON *fcnta)
+{
+    if (!fcnta)
+        return NULL;
+
+    cJSON *custom_attrs = cJSON_CreateObject();
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, fcnta)
+    {
+        if (item->string && !is_standard_fcnta_attribute(item->string))
+        {
+            cJSON_AddItemToObject(custom_attrs, item->string, cJSON_Duplicate(item, true));
+        }
+    }
+
+    if (cJSON_GetArraySize(custom_attrs) == 0)
+    {
+        cJSON_Delete(custom_attrs);
+        return NULL;
+    }
+
+    return custom_attrs;
+}
+
+static void merge_fcnta_custom_attributes(cJSON *target, cJSON *custom_attrs)
+{
+    if (!target || !custom_attrs)
+        return;
+
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, custom_attrs)
+    {
+        if (!item->string)
+            continue;
+
+        cJSON_DeleteItemFromObject(target, item->string);
+        if (!cJSON_IsNull(item))
+        {
+            cJSON_AddItemToObject(target, item->string, cJSON_Duplicate(item, true));
+        }
+    }
+}
+
+static cJSON *merged_fcnta_custom_attributes(cJSON *target, cJSON *updates)
+{
+    cJSON *merged = NULL;
+    cJSON *ri = cJSON_GetObjectItem(target, "ri");
+    if (ri && cJSON_IsString(ri))
+    {
+        merged = db_get_fcnta_custom_attributes(ri->valuestring);
+    }
+    if (!merged)
+    {
+        merged = extract_fcnta_custom_attributes(target);
+    }
+    if (!merged)
+    {
+        merged = cJSON_CreateObject();
+    }
+
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, updates)
+    {
+        if (!item->string)
+            continue;
+
+        cJSON_DeleteItemFromObject(merged, item->string);
+        if (!cJSON_IsNull(item))
+        {
+            cJSON_AddItemToObject(merged, item->string, cJSON_Duplicate(item, true));
+        }
+    }
+
+    return merged;
+}
+
 static int validate_fcnta_create(oneM2MPrimitive *o2pt, cJSON *root)
 {
     if (!o2pt->request_pc || !cJSON_IsObject(o2pt->request_pc))
@@ -54,6 +150,7 @@ static int validate_fcnta_create(oneM2MPrimitive *o2pt, cJSON *root)
 
 int create_annc(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 {
+    cJSON *custom_attrs = NULL;
 
     // type specific validation
     switch (o2pt->ty)
@@ -88,6 +185,11 @@ int create_annc(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
         return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
     }
 
+    if (o2pt->ty == RT_FCNTA)
+    {
+        custom_attrs = extract_fcnta_custom_attributes(resource);
+    }
+
     add_general_attribute(resource, parent_rtnode, o2pt->ty);
 
     int rsc = RSC_OK;
@@ -117,12 +219,23 @@ int create_annc(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 
     if (result != 1)
     {
+        if (custom_attrs)
+            cJSON_Delete(custom_attrs);
         handle_error(o2pt, RSC_INTERNAL_SERVER_ERROR, "DB store fail");
         cJSON_Delete(root);
 
         free(ptr);
         ptr = NULL;
         return RSC_INTERNAL_SERVER_ERROR;
+    }
+
+    if (custom_attrs)
+    {
+        cJSON *ri = cJSON_GetObjectItem(resource, "ri");
+        if (ri && cJSON_IsString(ri))
+        {
+            db_store_fcnta_custom_attributes(ri->valuestring, custom_attrs);
+        }
     }
 
     free(ptr);
@@ -135,6 +248,8 @@ int create_annc(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
     make_response_body(o2pt, child_rtnode);
     cJSON_DetachItemFromObject(root, get_resource_key(o2pt->ty));
     cJSON_Delete(root);
+    if (custom_attrs)
+        cJSON_Delete(custom_attrs);
 
     return o2pt->rsc = RSC_CREATED;
 }
@@ -143,6 +258,7 @@ int update_annc(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 {
     int rsc;
     char invalid_key[][8] = {"ty", "pi", "ri", "rn", "ct"};
+    cJSON *custom_attrs = NULL;
     if (!o2pt->request_pc || !cJSON_IsObject(o2pt->request_pc))
     {
         return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
@@ -229,9 +345,28 @@ int update_annc(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
     cJSON *aea = target_rtnode->obj;
     cJSON *pjson = NULL;
 
+    if (o2pt->ty == RT_FCNTA)
+    {
+        custom_attrs = extract_fcnta_custom_attributes(req_src);
+    }
+
     update_resource(target_rtnode->obj, req_src);
 
     result = db_update_resource(req_src, cJSON_GetObjectItem(target_rtnode->obj, "ri")->valuestring, target_rtnode->ty);
+
+    if (o2pt->ty == RT_FCNTA && custom_attrs)
+    {
+        cJSON *ri = cJSON_GetObjectItem(target_rtnode->obj, "ri");
+        cJSON *merged = merged_fcnta_custom_attributes(target_rtnode->obj, custom_attrs);
+        merge_fcnta_custom_attributes(target_rtnode->obj, custom_attrs);
+        if (ri && cJSON_IsString(ri) && merged)
+        {
+            db_update_fcnta_custom_attributes(ri->valuestring, merged);
+        }
+        if (merged)
+            cJSON_Delete(merged);
+        cJSON_Delete(custom_attrs);
+    }
 
     make_response_body(o2pt, target_rtnode);
 

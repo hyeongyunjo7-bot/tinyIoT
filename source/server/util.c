@@ -1189,6 +1189,23 @@ bool init_server()
 		else
 			rr->type = cJSON_False;
 		// cJSON_SetBoolValue(cJSON_GetObjectItem(cse, "rr"), false);
+
+		cJSON* srt = cJSON_GetObjectItem(cse, "srt");
+		bool has_fcnta = false;
+		cJSON* item = NULL;
+		cJSON_ArrayForEach(item, srt)
+		{
+			if (cJSON_IsNumber(item) && item->valueint == RT_FCNTA)
+			{
+				has_fcnta = true;
+				break;
+			}
+		}
+		if (srt && cJSON_IsArray(srt) && !has_fcnta)
+		{
+			cJSON_AddItemToArray(srt, cJSON_CreateNumber(RT_FCNTA));
+			db_update_resource(cse, CSE_BASE_RI, RT_CSE);
+		}
 	}
 	cJSON* poa_obj = cJSON_CreateArray();
 
@@ -3568,6 +3585,10 @@ bool is_attr_valid(cJSON* obj, ResourceType ty, char* err_msg)
 		{
 			flag = true;
 		}
+		if (!flag && ty == RT_FCNTA)
+		{
+			flag = true;
+		}
 		if (!flag)
 		{
 			return false;
@@ -4890,7 +4911,7 @@ int validate_fcnt(oneM2MPrimitive *o2pt, cJSON *fcnt, Operation op)
 			continue;
 		if (strcmp(pjson->valuestring, "lnk") == 0)
 			continue;
-		if (!cJSON_GetObjectItem(attr, pjson->valuestring))
+		if (!cJSON_GetObjectItem(attr, pjson->valuestring) && !cJSON_GetObjectItem(fcnt, pjson->valuestring))
 		{
 			return handle_error(o2pt, RSC_BAD_REQUEST, "invalid attribute in `aa`");
 		}

@@ -72,6 +72,9 @@ cJSON *getForbiddenUri(cJSON *acp_list);
 int db_store_fcnt_custom_attributes(const char *ri, cJSON *customAttrs);
 int db_update_fcnt_custom_attributes(const char *ri, cJSON *customAttrs);
 cJSON *db_get_fcnt_custom_attributes(const char *ri);
+int db_store_fcnta_custom_attributes(const char *ri, cJSON *customAttrs);
+int db_update_fcnta_custom_attributes(const char *ri, cJSON *customAttrs);
+cJSON *db_get_fcnta_custom_attributes(const char *ri);
 
 #if DB_TYPE == DB_SQLITE
     void db_test_and_bind_value(sqlite3_stmt *stmt, int index, cJSON *obj);

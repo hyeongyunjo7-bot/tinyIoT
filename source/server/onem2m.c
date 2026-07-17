@@ -53,6 +53,7 @@ void init_cse(cJSON *cse)
 	cJSON_AddItemToArray(srt, cJSON_CreateNumber(RT_CINA));
 	cJSON_AddItemToArray(srt, cJSON_CreateNumber(RT_CBA));
 	cJSON_AddItemToArray(srt, cJSON_CreateNumber(RT_FCNT));
+	cJSON_AddItemToArray(srt, cJSON_CreateNumber(RT_FCNTA));
 	cJSON_AddItemToArray(srt, cJSON_CreateNumber(RT_FCIN));
 
 	cJSON_AddStringToObject(cse, "ct", ct);
@@ -475,6 +476,7 @@ int delete_process(oneM2MPrimitive *o2pt, RTNode *rtnode)
 		update_cnt_cin(rtnode->parent, rtnode, -1);
 		break;
 	case RT_FCNT:
+		fcnt_deannounce_remote(rtnode);
 		break;
 	case RT_FCIN:
 		update_fcnt_fcin(rtnode->parent, rtnode, -1);
@@ -599,17 +601,20 @@ int delete_process(oneM2MPrimitive *o2pt, RTNode *rtnode)
 	cJSON *at_list = cJSON_GetObjectItem(rtnode->obj, "at");
 	cJSON *at = NULL;
 
-	cJSON_ArrayForEach(at, at_list)
+	if (rtnode->ty != RT_FCNT)
 	{
-		oneM2MPrimitive *o2pt = (oneM2MPrimitive *)calloc(1, sizeof(oneM2MPrimitive));
-		o2pt->op = OP_DELETE;
-		o2pt->to = strdup(at->valuestring);
-		o2pt->fr = "/" CSE_BASE_RI;
-		o2pt->ty = RT_AE;
-		o2pt->rqi = strdup("deannounce");
-		o2pt->isForwarding = true;
+		cJSON_ArrayForEach(at, at_list)
+		{
+			oneM2MPrimitive *o2pt = (oneM2MPrimitive *)calloc(1, sizeof(oneM2MPrimitive));
+			o2pt->op = OP_DELETE;
+			o2pt->to = strdup(at->valuestring);
+			o2pt->fr = "/" CSE_BASE_RI;
+			o2pt->ty = RT_AE;
+			o2pt->rqi = strdup("deannounce");
+			o2pt->isForwarding = true;
 
-		forwarding_onem2m_resource(o2pt, find_csr_rtnode_by_uri(at->valuestring));
+			forwarding_onem2m_resource(o2pt, find_csr_rtnode_by_uri(at->valuestring));
+		}
 	}
 
 	if ((rtnode->ty == RT_CNT || rtnode->ty == RT_FCNT) && rtnode->parent && rtnode->parent->ty == RT_FCNT)
@@ -1067,7 +1072,8 @@ int update_onem2m_resource(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 		rsc = o2pt->rsc;
 	}
 #if CSE_RVI >= RVI_3
-	announce_to_annc(target_rtnode);
+	if (target_rtnode->ty != RT_FCNT)
+		announce_to_annc(target_rtnode);
 #endif
 	return rsc;
 }

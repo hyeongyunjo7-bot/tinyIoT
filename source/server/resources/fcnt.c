@@ -8,6 +8,366 @@
 
 extern ResourceTree *rt;
 
+int fcnt_deannounce_remote(RTNode *fcnt_rtnode);
+
+#define ACME_TEMP_CND "org.onem2m.common.moduleclass.temperature"
+#define ACME_TEMP_ANNC_CND "org.onem2m.common.moduleclass.temperatureAnnc"
+#define ACME_TEMP_ANNC_WRAPPER "cod:tempeAnnc"
+#define ACME_CSEBASE_ANNC_PREFIX "/cse-in/"
+#define ACME_CSR_ROUTE "/id-in"
+
+static bool is_fcnt_annc_generated_attr(const char *attr)
+{
+	if (!attr)
+		return true;
+
+	const char *generated[] = {"ri", "pi", "ct", "lt", "ty", "rn", "st", "cs", "cni", "cbs", "at", "aa", "cr", NULL};
+	for (int i = 0; generated[i]; i++)
+	{
+		if (strcmp(attr, generated[i]) == 0)
+			return true;
+	}
+	return false;
+}
+
+static bool fcnt_is_acme_temperature(cJSON *fcnt)
+{
+	cJSON *cnd = fcnt ? cJSON_GetObjectItem(fcnt, "cnd") : NULL;
+	return cJSON_IsString(cnd) && strcmp(cnd->valuestring, ACME_TEMP_CND) == 0;
+}
+
+static const char *fcnt_annc_wrapper(cJSON *fcnt)
+{
+	if (fcnt_is_acme_temperature(fcnt))
+		return ACME_TEMP_ANNC_WRAPPER;
+	return get_resource_key(RT_FCNTA);
+}
+
+static RTNode *fcnt_find_forwarding_csr(const char *target)
+{
+	if (!target)
+		return NULL;
+
+	RTNode *csr = find_csr_rtnode_by_uri((char *)target);
+	if (csr)
+		return csr;
+
+	if (strncmp(target, ACME_CSEBASE_ANNC_PREFIX, strlen(ACME_CSEBASE_ANNC_PREFIX)) == 0)
+		return find_csr_rtnode_by_uri(ACME_CSR_ROUTE);
+
+	return NULL;
+}
+
+static char *fcnt_forwarding_to(const char *target)
+{
+	if (!target)
+		return NULL;
+
+	if (strncmp(target, ACME_CSEBASE_ANNC_PREFIX, strlen(ACME_CSEBASE_ANNC_PREFIX)) == 0)
+		return strdup(target + 1);
+
+	return strdup(target);
+}
+
+static cJSON *fcnt_find_response_annc(cJSON *response_pc, const char *wrapper)
+{
+	if (!response_pc)
+		return NULL;
+
+	cJSON *annc = wrapper ? cJSON_GetObjectItem(response_pc, wrapper) : NULL;
+	if (cJSON_IsObject(annc))
+		return annc;
+
+	cJSON *item = NULL;
+	cJSON_ArrayForEach(item, response_pc)
+	{
+		if (cJSON_IsObject(item))
+			return item;
+	}
+	return NULL;
+}
+
+static char *fcnt_original_uri(RTNode *fcnt_rtnode)
+{
+	if (!fcnt_rtnode)
+		return NULL;
+
+	char *uri = get_uri_rtnode(fcnt_rtnode);
+	if (!uri)
+		return NULL;
+
+	size_t len = strlen(CSE_BASE_RI) + strlen(uri) + 3;
+	char *result = malloc(len);
+	if (!result)
+		return NULL;
+
+	snprintf(result, len, "/%s/%s", CSE_BASE_RI, uri);
+	return result;
+}
+
+static cJSON *build_fcnta_representation(cJSON *fcnt, cJSON *effective_aa, const char *original_uri, bool include_lnk)
+{
+	if (!fcnt)
+		return NULL;
+
+	bool acme_temperature = fcnt_is_acme_temperature(fcnt);
+	const char *wrapper = fcnt_annc_wrapper(fcnt);
+	cJSON *root = cJSON_CreateObject();
+	cJSON *fcnta = cJSON_CreateObject();
+	cJSON_AddItemToObject(root, wrapper, fcnta);
+
+	if (include_lnk && original_uri)
+		cJSON_AddStringToObject(fcnta, "lnk", original_uri);
+
+	if (include_lnk)
+	{
+		cJSON *cnd = cJSON_GetObjectItem(fcnt, "cnd");
+		if (acme_temperature)
+			cJSON_AddStringToObject(fcnta, "cnd", ACME_TEMP_ANNC_CND);
+		else if (cnd)
+			cJSON_AddItemToObject(fcnta, "cnd", cJSON_Duplicate(cnd, true));
+
+		cJSON *lbl = cJSON_GetObjectItem(fcnt, "lbl");
+		if (lbl)
+			cJSON_AddItemToObject(fcnta, "lbl", cJSON_Duplicate(lbl, true));
+
+		cJSON *ast = cJSON_GetObjectItem(fcnt, "ast");
+		if (ast)
+			cJSON_AddItemToObject(fcnta, "ast", cJSON_Duplicate(ast, true));
+	}
+
+	cJSON *aa = NULL;
+	cJSON_ArrayForEach(aa, effective_aa)
+	{
+		if (!cJSON_IsString(aa) || is_fcnt_annc_generated_attr(aa->valuestring))
+			continue;
+		if (strcmp(aa->valuestring, "lnk") == 0 || strcmp(aa->valuestring, "cnd") == 0 ||
+			strcmp(aa->valuestring, "lbl") == 0 || strcmp(aa->valuestring, "ast") == 0)
+			continue;
+
+		cJSON *value = cJSON_GetObjectItem(fcnt, aa->valuestring);
+		if (value)
+			cJSON_AddItemToObject(fcnta, aa->valuestring, cJSON_Duplicate(value, true));
+	}
+
+	return root;
+}
+
+static char *fcnt_remote_create(RTNode *fcnt_rtnode, const char *target)
+{
+	if (!fcnt_rtnode || !target)
+		return NULL;
+
+	char *original_uri = fcnt_original_uri(fcnt_rtnode);
+	if (!original_uri)
+		return NULL;
+
+	cJSON *root = build_fcnta_representation(fcnt_rtnode->obj, cJSON_GetObjectItem(fcnt_rtnode->obj, "aa"), original_uri, true);
+	free(original_uri);
+	if (!root)
+		return NULL;
+
+	oneM2MPrimitive *req = calloc(1, sizeof(oneM2MPrimitive));
+	req->op = OP_CREATE;
+	req->to = fcnt_forwarding_to(target);
+	req->fr = strdup("/" CSE_BASE_RI);
+	req->ty = RT_FCNTA;
+	req->rqi = strdup("fcnt-create-annc");
+	req->rvi = CSE_RVI;
+	req->request_pc = root;
+	req->isForwarding = true;
+
+	const char *wrapper = fcnt_annc_wrapper(fcnt_rtnode->obj);
+	int rsc = forwarding_onem2m_resource(req, fcnt_find_forwarding_csr(target));
+	char *remote_uri = NULL;
+	if (rsc < 4000 && req->response_pc)
+	{
+		cJSON *annc = fcnt_find_response_annc(req->response_pc, wrapper);
+		cJSON *name = annc ? cJSON_GetObjectItem(annc, "rn") : NULL;
+		if (!cJSON_IsString(name))
+			name = annc ? cJSON_GetObjectItem(annc, "ri") : NULL;
+		if (cJSON_IsString(name))
+		{
+			size_t len = strlen(target) + strlen(name->valuestring) + 2;
+			remote_uri = malloc(len);
+			if (remote_uri)
+				snprintf(remote_uri, len, "%s/%s", target, name->valuestring);
+		}
+	}
+	else
+	{
+		logger("FCNT", LOG_LEVEL_ERROR, "remote FCNTA CREATE failed rsc=%d target=%s", rsc, target);
+	}
+
+	free_o2pt(req);
+	return remote_uri;
+}
+
+static void fcnt_announce_create(RTNode *fcnt_rtnode, cJSON *requested_at)
+{
+	if (!fcnt_rtnode || !requested_at || !cJSON_IsArray(requested_at))
+		return;
+
+	cJSON *final_at = cJSON_CreateArray();
+	cJSON *target = NULL;
+	cJSON_ArrayForEach(target, requested_at)
+	{
+		if (!cJSON_IsString(target) || is_blank_string(target->valuestring))
+			continue;
+
+		char *remote_uri = fcnt_remote_create(fcnt_rtnode, target->valuestring);
+		if (remote_uri)
+		{
+			cJSON_AddItemToArray(final_at, cJSON_CreateString(remote_uri));
+			free(remote_uri);
+			break; // MVP: one remote announcement target.
+		}
+	}
+
+	if (cJSON_GetArraySize(final_at) > 0)
+	{
+		cJSON_DeleteItemFromObject(fcnt_rtnode->obj, "at");
+		cJSON_AddItemToObject(fcnt_rtnode->obj, "at", final_at);
+		db_update_resource(fcnt_rtnode->obj, cJSON_GetObjectItem(fcnt_rtnode->obj, "ri")->valuestring, RT_FCNT);
+	}
+	else
+	{
+		cJSON_Delete(final_at);
+		cJSON_DeleteItemFromObject(fcnt_rtnode->obj, "at");
+		db_update_resource(fcnt_rtnode->obj, cJSON_GetObjectItem(fcnt_rtnode->obj, "ri")->valuestring, RT_FCNT);
+	}
+}
+
+static void fcnt_announce_update(RTNode *fcnt_rtnode)
+{
+	if (!fcnt_rtnode)
+		return;
+
+	cJSON *at_list = cJSON_GetObjectItem(fcnt_rtnode->obj, "at");
+	if (!at_list || !cJSON_IsArray(at_list))
+		return;
+
+	cJSON *at = NULL;
+	cJSON_ArrayForEach(at, at_list)
+	{
+		if (!cJSON_IsString(at) || at->valuestring[0] != '/')
+			continue;
+
+		cJSON *root = build_fcnta_representation(fcnt_rtnode->obj, cJSON_GetObjectItem(fcnt_rtnode->obj, "aa"), NULL, false);
+		if (!root)
+			continue;
+
+		oneM2MPrimitive *req = calloc(1, sizeof(oneM2MPrimitive));
+		req->op = OP_UPDATE;
+		req->to = fcnt_forwarding_to(at->valuestring);
+		req->fr = strdup("/" CSE_BASE_RI);
+		req->ty = 0;
+		req->rqi = strdup("fcnt-update-annc");
+		req->rvi = CSE_RVI;
+		req->request_pc = root;
+		req->isForwarding = true;
+
+		int rsc = forwarding_onem2m_resource(req, fcnt_find_forwarding_csr(at->valuestring));
+		if (rsc >= 4000)
+			logger("FCNT", LOG_LEVEL_ERROR, "remote FCNTA UPDATE failed rsc=%d target=%s", rsc, at->valuestring);
+		free_o2pt(req);
+	}
+}
+
+static bool fcnt_remote_uri_matches_target(const char *remote_uri, const char *target)
+{
+	if (!remote_uri || !target)
+		return false;
+
+	size_t len = strlen(target);
+	return strncmp(remote_uri, target, len) == 0 && remote_uri[len] == '/';
+}
+
+static void fcnt_announce_reconcile(RTNode *fcnt_rtnode, cJSON *requested_at)
+{
+	if (!fcnt_rtnode || !requested_at || !cJSON_IsArray(requested_at))
+		return;
+
+	if (cJSON_GetArraySize(requested_at) == 0)
+	{
+		fcnt_deannounce_remote(fcnt_rtnode);
+		cJSON_DeleteItemFromObject(fcnt_rtnode->obj, "at");
+		db_update_resource(fcnt_rtnode->obj, cJSON_GetObjectItem(fcnt_rtnode->obj, "ri")->valuestring, RT_FCNT);
+		return;
+	}
+
+	cJSON *target = cJSON_GetArrayItem(requested_at, 0); // MVP: one target.
+	if (!target || !cJSON_IsString(target))
+		return;
+
+	cJSON *final_at = cJSON_CreateArray();
+	cJSON *old_at_list = cJSON_GetObjectItem(fcnt_rtnode->obj, "at");
+	cJSON *old_at = NULL;
+	cJSON_ArrayForEach(old_at, old_at_list)
+	{
+		if (cJSON_IsString(old_at) && fcnt_remote_uri_matches_target(old_at->valuestring, target->valuestring))
+		{
+			cJSON_AddItemToArray(final_at, cJSON_CreateString(old_at->valuestring));
+			break;
+		}
+	}
+
+	if (cJSON_GetArraySize(final_at) == 0)
+	{
+		fcnt_deannounce_remote(fcnt_rtnode);
+		char *remote_uri = fcnt_remote_create(fcnt_rtnode, target->valuestring);
+		if (remote_uri)
+		{
+			cJSON_AddItemToArray(final_at, cJSON_CreateString(remote_uri));
+			free(remote_uri);
+		}
+	}
+
+	if (cJSON_GetArraySize(final_at) > 0)
+	{
+		cJSON_DeleteItemFromObject(fcnt_rtnode->obj, "at");
+		cJSON_AddItemToObject(fcnt_rtnode->obj, "at", final_at);
+		db_update_resource(fcnt_rtnode->obj, cJSON_GetObjectItem(fcnt_rtnode->obj, "ri")->valuestring, RT_FCNT);
+	}
+	else
+	{
+		cJSON_Delete(final_at);
+	}
+}
+
+int fcnt_deannounce_remote(RTNode *fcnt_rtnode)
+{
+	if (!fcnt_rtnode)
+		return 0;
+
+	cJSON *at_list = cJSON_GetObjectItem(fcnt_rtnode->obj, "at");
+	if (!at_list || !cJSON_IsArray(at_list))
+		return 0;
+
+	cJSON *at = NULL;
+	cJSON_ArrayForEach(at, at_list)
+	{
+		if (!cJSON_IsString(at) || at->valuestring[0] != '/')
+			continue;
+
+		oneM2MPrimitive *req = calloc(1, sizeof(oneM2MPrimitive));
+		req->op = OP_DELETE;
+		req->to = fcnt_forwarding_to(at->valuestring);
+		req->fr = strdup("/" CSE_BASE_RI);
+		req->ty = 0;
+		req->rqi = strdup("fcnt-delete-annc");
+		req->rvi = CSE_RVI;
+		req->isForwarding = true;
+
+		int rsc = forwarding_onem2m_resource(req, fcnt_find_forwarding_csr(at->valuestring));
+		if (rsc != RSC_DELETED && rsc != RSC_NOT_FOUND)
+			logger("FCNT", LOG_LEVEL_ERROR, "remote FCNTA DELETE failed rsc=%d target=%s", rsc, at->valuestring);
+		free_o2pt(req);
+	}
+
+	return 0;
+}
+
 int create_fcnt(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 {
 	cJSON *root = cJSON_Duplicate(o2pt->request_pc, 1);
@@ -146,59 +506,11 @@ int create_fcnt(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 		}
 	}
 
+	cJSON *requested_at = NULL;
 #if CSE_RVI >= RVI_3
-	bool parent_was_announced = false;
-	cJSON *final_at = cJSON_CreateArray();
-
-	if (parent_rtnode->ty == RT_AE || parent_rtnode->ty == RT_CNT || parent_rtnode->ty == RT_FCNT)
-	{
-		cJSON *parent_at = cJSON_GetObjectItem(parent_rtnode->obj, "at");
-		if(parent_at && cJSON_GetArraySize(parent_at) > 0)
-		{
-			parent_was_announced = true;
-		}
-	}
-
-	if (parent_was_announced)
-	{
-		if (handle_annc_create(parent_rtnode, fcnt, cJSON_GetObjectItem(fcnt, "at"), final_at) == -1)
-		{
-			if (customAttrs) cJSON_Delete(customAttrs);
-			cJSON_Delete(root);
-			cJSON_Delete(final_at);
-			return handle_error(o2pt, RSC_BAD_REQUEST, "invalid attribute in `aa`");
-		}
-
-		if (cJSON_GetArraySize(final_at) > 0)
-		{
-			cJSON_DeleteItemFromObject(fcnt, "at");
-			cJSON_AddItemToObject(fcnt, "at", final_at);
-		}
-		else
-		{
-			cJSON_Delete(final_at);
-		}
-	}
-	else
-	{
-		if (handle_annc_create(parent_rtnode->parent, fcnt, cJSON_GetObjectItem(fcnt, "at"), final_at) == -1)
-		{
-			if (customAttrs) cJSON_Delete(customAttrs);
-			cJSON_Delete(root);
-			cJSON_Delete(final_at);
-			return handle_error(o2pt, RSC_BAD_REQUEST, "invalid attribute in `aa`");
-		}
-
-		if (cJSON_GetArraySize(final_at) > 0)
-		{
-			cJSON_DeleteItemFromObject(fcnt, "at");
-			cJSON_AddItemToObject(fcnt, "at", final_at);
-		}
-		else
-		{
-			cJSON_Delete(final_at);
-		}
-	}
+	cJSON *at_for_annc = cJSON_GetObjectItem(fcnt, "at");
+	if (at_for_annc && cJSON_IsArray(at_for_annc) && cJSON_GetArraySize(at_for_annc) > 0)
+		requested_at = cJSON_Duplicate(at_for_annc, true);
 #endif
 
 	cJSON_AddNumberToObject(fcnt, "st", 0);
@@ -266,6 +578,14 @@ int create_fcnt(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 
 	RTNode *child_rtnode = create_rtnode(fcnt, RT_FCNT);
 	add_child_resource_tree(parent_rtnode, child_rtnode);
+
+#if CSE_RVI >= RVI_3
+	if (requested_at)
+	{
+		fcnt_announce_create(child_rtnode, requested_at);
+		cJSON_Delete(requested_at);
+	}
+#endif
 
 	if (o2pt->rvi >= RVI_4)
 	{
@@ -365,6 +685,7 @@ int update_fcnt(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 	cJSON *acpi_obj = NULL;
 	bool acpi_flag = false;
 	bool needs_fci = false;
+	cJSON *requested_at_update = NULL;
 
 	cJSON *customAttrs = extract_custom_attributes(m2m_fcnt);
 	if (customAttrs)
@@ -460,10 +781,8 @@ int update_fcnt(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 	cJSON *at = NULL;
 	if ((at = cJSON_GetObjectItem(m2m_fcnt, "at")))
 	{
-		cJSON *final_at = cJSON_CreateArray();
-		handle_annc_update(target_rtnode, at, final_at);
+		requested_at_update = cJSON_Duplicate(at, true);
 		cJSON_DeleteItemFromObject(m2m_fcnt, "at");
-		cJSON_AddItemToObject(m2m_fcnt, "at", final_at);
 	}
 
 	char *lt = get_local_time(0);
@@ -738,6 +1057,12 @@ int update_fcnt(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 	update_resource(target_rtnode->obj, m2m_fcnt);
 
 	result = db_update_resource(m2m_fcnt, cJSON_GetObjectItem(target_rtnode->obj, "ri")->valuestring, RT_FCNT);
+	if (result != 1)
+	{
+		if (customAttrs) cJSON_Delete(customAttrs);
+		if (requested_at_update) cJSON_Delete(requested_at_update);
+		return handle_error(o2pt, RSC_INTERNAL_SERVER_ERROR, "DB update fail");
+	}
 
 	if (customAttrs)
 	{
@@ -781,6 +1106,16 @@ int update_fcnt(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 			logger("FCNT", LOG_LEVEL_ERROR, "Failed to create FCIN, rolled back cni/cbs");
 		}
 	}
+
+#if CSE_RVI >= RVI_3
+	if (requested_at_update)
+	{
+		fcnt_announce_reconcile(target_rtnode, requested_at_update);
+		cJSON_Delete(requested_at_update);
+		requested_at_update = NULL;
+	}
+	fcnt_announce_update(target_rtnode);
+#endif
 
 	for (int i = 0; i < updateAttrCnt; i++)
 	{
