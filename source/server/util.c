@@ -135,6 +135,9 @@ ResourceType http_parse_object_type(header_t* headers)
 	case 10005:
 		ty = RT_CBA;
 		break;
+	case 10028:
+		ty = RT_FCNTA;
+		break;
 	default:
 		ty = RT_MIXED;
 		break;

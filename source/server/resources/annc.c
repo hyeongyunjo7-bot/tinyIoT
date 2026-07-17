@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include "../onem2m.h"
 #include "../logger.h"
 #include "../util.h"
@@ -7,6 +8,49 @@
 
 extern ResourceTree *rt;
 extern cJSON *ATTRIBUTES;
+
+static int validate_fcnta_create(oneM2MPrimitive *o2pt, cJSON *root)
+{
+    if (!o2pt->request_pc || !cJSON_IsObject(o2pt->request_pc))
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
+    }
+
+    if (!root || !cJSON_IsObject(root))
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
+    }
+
+    cJSON *resource = cJSON_GetObjectItemCaseSensitive(root, "m2m:fcntA");
+    if (!resource)
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
+    }
+
+    if (!cJSON_IsObject(resource))
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
+    }
+
+    if (parse_object_type_cjson(root) != RT_FCNTA)
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "resource type mismatch");
+    }
+
+    cJSON *lnk = cJSON_GetObjectItem(resource, "lnk");
+    if (!lnk || !cJSON_IsString(lnk) || is_blank_string(lnk->valuestring))
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "lnk is empty");
+    }
+
+    cJSON *rn = cJSON_GetObjectItem(resource, "rn");
+    if (rn && (!cJSON_IsString(rn) || is_blank_string(rn->valuestring)))
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "attribute `rn` is invalid");
+    }
+
+    return RSC_OK;
+}
 
 int create_annc(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
 {
@@ -28,11 +72,21 @@ int create_annc(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
     case RT_CINA:
         break;
     case RT_FCNTA:
-        break;
+    {
+        int rsc = validate_fcnta_create(o2pt, o2pt->request_pc);
+        if (rsc != RSC_OK)
+            return rsc;
+    }
+    break;
     }
 
     cJSON *root = cJSON_Duplicate(o2pt->request_pc, 1);
     cJSON *resource = cJSON_GetObjectItem(root, get_resource_key(o2pt->ty));
+    if (!resource || !cJSON_IsObject(resource))
+    {
+        cJSON_Delete(root);
+        return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
+    }
 
     add_general_attribute(resource, parent_rtnode, o2pt->ty);
 
@@ -46,6 +100,17 @@ int create_annc(oneM2MPrimitive *o2pt, RTNode *parent_rtnode)
     // Add uri attribute
     char *ptr = malloc(1024);
     cJSON *rn = cJSON_GetObjectItem(resource, "rn");
+    if (!ptr)
+    {
+        cJSON_Delete(root);
+        return handle_error(o2pt, RSC_INTERNAL_SERVER_ERROR, "Memory allocation failed");
+    }
+    if (!rn || !rn->valuestring)
+    {
+        free(ptr);
+        cJSON_Delete(root);
+        return handle_error(o2pt, RSC_BAD_REQUEST, "attribute `rn` is invalid");
+    }
     sprintf(ptr, "%s/%s", get_uri_rtnode(parent_rtnode), rn->valuestring);
     // Save to DB
     int result = db_store_resource(resource, ptr);
@@ -78,7 +143,31 @@ int update_annc(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 {
     int rsc;
     char invalid_key[][8] = {"ty", "pi", "ri", "rn", "ct"};
-    cJSON *req_src = cJSON_GetObjectItem(o2pt->request_pc, get_resource_key(o2pt->ty));
+    if (!o2pt->request_pc || !cJSON_IsObject(o2pt->request_pc))
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
+    }
+    cJSON *req_src = NULL;
+    if (o2pt->ty == RT_FCNTA)
+    {
+        req_src = cJSON_GetObjectItemCaseSensitive(o2pt->request_pc, get_resource_key(o2pt->ty));
+    }
+    else
+    {
+        req_src = cJSON_GetObjectItem(o2pt->request_pc, get_resource_key(o2pt->ty));
+    }
+	if (!req_src)
+	{
+		return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
+	}
+    if (!cJSON_IsObject(req_src))
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "invalid announced resource payload");
+    }
+    if (o2pt->ty == RT_FCNTA && parse_object_type_cjson(o2pt->request_pc) != o2pt->ty)
+    {
+        return handle_error(o2pt, RSC_BAD_REQUEST, "resource type mismatch");
+    }
     int invalid_key_size = sizeof(invalid_key) / (8 * sizeof(char));
     for (int i = 0; i < invalid_key_size; i++)
     {
@@ -87,12 +176,13 @@ int update_annc(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
             return handle_error(o2pt, RSC_BAD_REQUEST, "unsupported attribute on update");
         }
     }
-    char *lnk = cJSON_GetObjectItem(target_rtnode->obj, "lnk")->valuestring;
-    logger("UTIL", LOG_LEVEL_DEBUG, "lnk : %s, fr : %s", lnk, o2pt->fr);
-    if (!lnk)
-    {
-        return handle_error(o2pt, RSC_INTERNAL_SERVER_ERROR, "lnk is empty");
-    }
+	cJSON *lnk_item = cJSON_GetObjectItem(target_rtnode->obj, "lnk");
+	if (!lnk_item || !cJSON_IsString(lnk_item) || is_blank_string(lnk_item->valuestring))
+	{
+		return handle_error(o2pt, RSC_BAD_REQUEST, "lnk is empty");
+	}
+	char *lnk = lnk_item->valuestring;
+	logger("UTIL", LOG_LEVEL_DEBUG, "lnk : %s, fr : %s", lnk, o2pt->fr);
     if (strncmp(o2pt->fr, lnk, strlen(o2pt->fr)) == 0 && lnk[strlen(o2pt->fr)] == '/')
     {
         logger("UTIL", LOG_LEVEL_DEBUG, "update from originator");
@@ -112,7 +202,6 @@ int update_annc(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
                     logger("UTIL", LOG_LEVEL_DEBUG, "Empty update payload, skipping forwarding");
                 }
                 else {
-                    char *lnk = cJSON_GetObjectItem(target_rtnode->obj, "lnk")->valuestring;
 
                     oneM2MPrimitive *req = calloc(1, sizeof(oneM2MPrimitive));
                     o2ptcpy(&req, o2pt);
@@ -142,7 +231,7 @@ int update_annc(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 
     update_resource(target_rtnode->obj, req_src);
 
-    result = db_update_resource(req_src, cJSON_GetObjectItem(target_rtnode->obj, "ri")->valuestring, RT_AEA);
+    result = db_update_resource(req_src, cJSON_GetObjectItem(target_rtnode->obj, "ri")->valuestring, target_rtnode->ty);
 
     make_response_body(o2pt, target_rtnode);
 

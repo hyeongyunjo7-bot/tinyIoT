@@ -1058,7 +1058,7 @@ int update_onem2m_resource(oneM2MPrimitive *o2pt, RTNode *target_rtnode)
 	case RT_CINA:
 	case RT_FCNTA:
 	case RT_GRPA:
-		update_annc(o2pt, target_rtnode);
+		rsc = update_annc(o2pt, target_rtnode);
 		break;
 #endif
 
